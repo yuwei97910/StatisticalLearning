@@ -1,0 +1,457 @@
+---
+title: "Assignment_2_9455_yuwei6"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# STAT 542 -- Coding Assignment 2
+
+#### YuWei Lai / yuwei6
+
+UIN: 677679455
+
+2021.09.27
+
+## Part 1: Lasso Implementation
+
+### Import Libraries and Read the Dataset
+
+```{r}
+library(glmnet)
+
+bos_housing = read.csv("Coding2_myData.csv")
+X = as.matrix(bos_housing[, -14])
+y = bos_housing$Y
+
+dim(X)
+```
+
+### Lasso using the Coordinate Descent (CD) algorithm
+
+-   The function for one variable
+
+```{r}
+one_var_lasso = function(r, x, lam) {
+  xx = sum(x^2)
+  xr = sum(r * x)
+  b = (abs(xr) - lam/2)/xx
+  b = sign(xr) * ifelse(b > 0, b, 0)
+  
+  return(b)
+}
+```
+
+-   The function for implementing multi-variables
+
+```{r}
+MyLasso = function(X, y, lam.seq, maxit = 500) {
+  # X: n-by-p design matrix without the intercept 
+  # y: n-by-1 response vector 
+  # lam.seq: sequence of lambda values (arranged from large to small)
+  # maxit: number of updates for each lambda 
+  
+  n = length(y)
+  p = dim(X)[2]
+  nlam = length(lam.seq)
+  
+  ##############################
+  # Record the corresponding means and scales
+  # For example, 
+  # y.mean = mean(y)
+  # Xs = centered and scaled X
+  ##############################
+  y_mean = mean(y)
+  y_sd = sd(y) * sqrt((n-1)/n)
+  y_scale = (y-y_mean)/y_sd
+  
+  x_mean = c()
+  x_sd = c()
+  Xs = matrix(nrow = n, ncol = p)
+  for(i in 1:ncol(X)){
+    m = mean(X[,i])
+    s = sd(X[,i]) * sqrt((n-1)/n)
+    x_mean = append(x_mean, m)
+    x_sd = append(x_sd, s)
+    Xs[,i] = scale(X[,i])
+  }
+  
+  # Initilize coef vector b and residual vector r
+  b = rep(0, p)
+  r = y
+  B = matrix(nrow = nlam, ncol = p + 1)
+  
+  # Triple nested loop
+  for (m in 1:nlam) {
+    lam = 2 * n * lam.seq[m]
+    for (step in 1:maxit) {
+      for (j in 1:p) {
+        r = r + (Xs[, j] * b[j])
+        b[j] = one_var_lasso(r, Xs[, j], lam)
+        r = r - Xs[, j] * b[j]
+      }
+    }
+    B[m, ] = c(0, b)
+  }
+  
+  ##############################
+  # Scale back the coefficients;
+  # Update the intercepts stored in B[, 1]
+  ##############################
+  B_result = B
+  for(col in 1:ncol(B_result)){
+    if(col == 1){
+      for(j in 1:nrow(B_result)){
+        sum_c = 0
+        for(k in 2:ncol(B_result)){
+          sum_c = sum_c + (B_result[j, k] * x_mean[k-1])/x_sd[k-1]
+        }
+        B_result[j, 1] = y_mean - sum_c
+      }
+    }
+    else{
+      for(j in 1:nrow(B_result)){
+        B_result[j, col] = B_result[j, col] / x_sd[col-1]
+      }
+    }
+  }
+  return(t(B_result))
+}
+```
+
+### Test the algorithms with given lambda sequences
+
+```{r}
+lam.seq = exp(seq(-1, -8, length.out = 80))
+myout = MyLasso(X, y, lam.seq, maxit = 100)
+rownames(myout) = c("Intercept", colnames(X)) 
+dim(myout)
+```
+
+-   Plot the result - for 13 non-intercept variables
+
+```{r}
+x.index = log(lam.seq)
+beta = myout[-1, ]  # beta is a 13-by-80 matrix
+matplot(x.index, t(beta),
+        xlim = c(min(x.index), max(x.index)),
+        lty = 1,
+        xlab = "Log Lambda",
+        ylab = "Coefficients",
+        type="l", 
+        lwd = 1)
+```
+
+### Check the accuracy against the output from glmnet
+
+```{r}
+lasso.fit = glmnet(X, y, alpha = 1, lambda = lam.seq)
+max(abs(coef(lasso.fit) - myout))
+```
+
+-   The result from glmnet
+
+```{r}
+plot(lasso.fit, xvar = "lambda")
+```
+
+------------------------------------------------------------------------
+
+## Part 2: Simulation Study
+
+### Import Libraries and Read Datasets
+
+```{r}
+library(glmnet) 
+library(pls)
+set.seed(9455)
+
+### -------------------- ###
+# Import Data
+myData = read.csv("BostonData2.csv")
+myData = myData[, -1]
+dim(myData)
+
+X = data.matrix(myData[,-1])  
+Y = myData[,1]
+```
+
+-   Generate sets for 50 times testing
+
+```{r}
+T = 50
+n = length(Y)
+ntest = round(n * 0.25)  # test set size
+ntrain = n - ntest  # training set size
+all.test.id = matrix(0, ntest, T)  # 
+for(t in 1:T){
+  all.test.id[, t] = sample(1:n, ntest)
+}
+```
+
+### Try first set for seven procedures
+
+```{r}
+colname = c("Full", "R_min", "R_1se", "L_min", "L_1se", "L_Refit", "PCR")
+
+test.id = all.test.id[,1]
+MSPE = rep(0, 7)
+names(MSPE) = colname
+```
+
+#### Full Model
+
+```{r}
+full.model = lm(Y ~ ., data = myData[-test.id,])
+Ytest.pred = predict(full.model, newdata = myData[test.id,])
+MSPE[1] = mean((myData$Y[test.id] - Ytest.pred)^2)
+```
+
+#### Ridge Regression
+
+-   Try the default setting
+
+##### Ridge using min lambda
+
+```{r}
+cv.out = cv.glmnet(X[-test.id, ], Y[-test.id], alpha = 0)
+best.lam = cv.out$lambda.min
+
+Ytest.pred = predict(cv.out, s = best.lam, newx = X[test.id, ])
+MSPE[2] = mean((Y[test.id] - Ytest.pred)^2)
+
+plot(cv.out)
+```
+
+-   Try the first lambda sequence
+
+```{r}
+mylasso.lambda.seq = exp(seq(-4, 1, length.out = 100))
+cv.out = cv.glmnet(X[-test.id, ], Y[-test.id], alpha = 0, 
+                   lambda = mylasso.lambda.seq)
+plot(cv.out)
+```
+
+-   Try the second lambda sequence
+
+```{r}
+mylasso.lambda.seq = exp(seq(-10, -2, length.out = 100))
+cv.out = cv.glmnet(X[-test.id, ], Y[-test.id], alpha = 0, 
+                   lambda = mylasso.lambda.seq)
+plot(cv.out)
+```
+
+##### Ridge using min lambda
+
+```{r}
+best.lam = cv.out$lambda.min
+Ytest.pred = predict(cv.out, s = best.lam, newx = X[test.id, ])
+MSPE[2] = mean((Y[test.id] - Ytest.pred)^2)
+```
+
+##### Ridge using 1se lambda
+
+```{r}
+best.lam = cv.out$lambda.1se
+Ytest.pred = predict(cv.out, s = best.lam, newx = X[test.id, ])
+MSPE[3] = mean((Y[test.id] - Ytest.pred)^2)
+```
+
+-   Choose the lambda sequence for further tests
+
+```{r}
+ridge_lambda_seq = mylasso.lambda.seq = exp(seq(-10, -2, length.out = 100))
+```
+
+### Lasso Regression
+
+```{r}
+cv.out = cv.glmnet(X[-test.id, ], Y[-test.id], alpha = 1)
+```
+
+##### Lasso using min lambda
+
+```{r}
+best.lam = cv.out$lambda.min
+Ytest.pred = predict(cv.out, s = best.lam, newx = X[test.id, ])
+MSPE[4] = mean((Y[test.id] - Ytest.pred)^2)
+```
+
+##### Lasso using 1se lambda
+
+```{r}
+best.lam = cv.out$lambda.1se
+Ytest.pred = predict(cv.out, s = best.lam, newx = X[test.id, ])
+MSPE[5] = mean((Y[test.id] - Ytest.pred)^2)
+```
+
+##### Lasso refit by lambda.min or lambda.1se
+
+```{r}
+mylasso.coef = predict(cv.out, s = best.lam, type = "coefficients")
+var.sel = row.names(mylasso.coef)[which(mylasso.coef != 0)[-1]]
+
+mylasso.refit = lm(Y ~ ., myData[-test.id, c("Y", var.sel)])
+Ytest.pred = predict(mylasso.refit, newdata = myData[test.id, ])
+MSPE[6] = mean((Ytest.pred - Y[test.id])^2)
+```
+
+```{r}
+plot(cv.out)
+```
+
+### Principle components regression
+
+with components chosen by 10-fold cross validation: `validation="CV"` in `pcr()` will compute the ten-fold cross-validation error
+
+```{r}
+mypcr = pcr(Y ~ ., data= myData[-test.id, ], validation="CV")
+CVerr = RMSEP(mypcr)$val[1, , ]
+adjCVerr = RMSEP(mypcr)$val[2, , ]
+best.ncomp = which.min(CVerr) - 1
+
+### -------------------- ###
+if (best.ncomp==0) {
+  Ytest.pred = mean(myData$Y[-test.id])
+} else {
+  Ytest.pred = predict(mypcr, myData[test.id,], ncomp=best.ncomp)
+}
+
+MSPE[7] = mean((Ytest.pred - myData$Y[test.id])^2)
+```
+
+```{r}
+best.ncomp
+```
+
+#### Seven results for the first split
+
+```{r}
+print(MSPE)
+```
+
+#### The function for Testing multi-times splitting
+
+```{r}
+seven_procedures <- function(df, test.id, ridge_lambda_seq){
+  colname = c("Full", "R_min", "R_1se", "L_min", "L_1se", "L_Refit", "PCR")
+  MSPE <- data.frame(matrix(ncol = 7, nrow = 1))
+  colnames(MSPE) <- colname
+  
+  ### -------------------- ###
+  # Full Model
+  full.model = lm(Y ~ ., data = df[-test.id,])
+  Ytest.pred = predict(full.model, newdata = df[test.id,])
+  MSPE[1] = mean((df$Y[test.id] - Ytest.pred)^2)
+
+  
+  ### -------------------- ###
+  # Ridge
+  cv.out = cv.glmnet(X[-test.id, ], Y[-test.id], alpha = 0, 
+                     lambda = ridge_lambda_seq)
+  best.lam = cv.out$lambda.min
+  Ytest.pred = predict(cv.out, s = best.lam, newx = X[test.id, ])
+  MSPE[2] = mean((Y[test.id] - Ytest.pred)^2)
+  
+  best.lam = cv.out$lambda.1se
+  Ytest.pred = predict(cv.out, s = best.lam, newx = X[test.id, ])
+  MSPE[3] = mean((Y[test.id] - Ytest.pred)^2)
+  
+  ### -------------------- ###
+  # Lasso
+  cv.out = cv.glmnet(X[-test.id, ], Y[-test.id], alpha = 1)
+  best.lam = cv.out$lambda.min
+  Ytest.pred = predict(cv.out, s = best.lam, newx = X[test.id, ])
+  MSPE[4] = mean((Y[test.id] - Ytest.pred)^2)
+  
+  best.lam = cv.out$lambda.1se
+  Ytest.pred = predict(cv.out, s = best.lam, newx = X[test.id, ])
+  MSPE[5] = mean((Y[test.id] - Ytest.pred)^2)
+  
+  mylasso.coef = predict(cv.out, s = best.lam, type = "coefficients")
+  var.sel = row.names(mylasso.coef)[which(mylasso.coef != 0)[-1]]
+  mylasso.refit = lm(Y ~ ., df[-test.id, c("Y", var.sel)])
+  Ytest.pred = predict(mylasso.refit, newdata = df[test.id, ])
+  MSPE[6] = mean((Ytest.pred - Y[test.id])^2)
+
+  ### -------------------- ###
+  # PCR ---------
+  mypcr = pcr(Y ~ ., data= df[-test.id, ], validation="CV")
+  CVerr = RMSEP(mypcr)$val[1, , ]
+  adjCVerr = RMSEP(mypcr)$val[2, , ]
+  best.ncomp = which.min(CVerr) - 1
+  
+  ### -------------------- ###
+  if (best.ncomp==0) {
+    Ytest.pred = mean(df$Y[-test.id])
+  } else {
+    Ytest.pred = predict(mypcr, df[test.id,], ncomp=best.ncomp)
+  }
+  MSPE[7] = mean((Ytest.pred - df$Y[test.id])^2)
+  
+  ### -------------------- ###
+  # Return the result -----
+  return(MSPE)
+}
+```
+
+### Repeat for Boston Housing Data 2 50 times
+
+```{r}
+MSPE_result <- data.frame(matrix(ncol = 7, nrow = 0))
+
+colnames(MSPE_result) <- colname
+for (i in 1:50){
+  MSPE = seven_procedures(myData, all.test.id[,i], ridge_lambda_seq)
+  MSPE_result <- rbind(MSPE_result, MSPE)
+}
+boxplot(MSPE_result, main = "Seven Procedures for Boston Housing Data 2", 
+        ylab = "MSPE")
+```
+
+The results of seven procedures were similar.
+
+------------------------------------------------------------------------
+
+### Repeat for Boston Housing Data 3 
+
+#### Import the data
+
+```{r}
+bos_housing_3 = read.csv("BostonData3.csv")
+bos_housing_3 = bos_housing_3[, -1]
+
+X = data.matrix(bos_housing_3[,-1])  
+Y = bos_housing_3[,1]
+```
+
+#### Generate 50 times splitting sets
+
+```{r}
+T = 50
+n = length(Y)
+ntest = round(n * 0.25)  # test set size
+ntrain = n - ntest  # training set size
+all.test.id = matrix(0, ntest, T)  # 
+for(t in 1:T){
+  all.test.id[, t] = sample(1:n, ntest)
+}
+```
+
+#### Test with the function
+
+```{r}
+MSPE_result_B3 <- data.frame(matrix(ncol = 7, nrow = 0))
+colnames(MSPE_result_B3) <- colname
+for (i in 1:50){
+  MSPE = seven_procedures(bos_housing_3, all.test.id[,i], ridge_lambda_seq)
+  MSPE_result_B3 <- rbind(MSPE_result_B3, MSPE)
+}
+MSPE_result_B3 = MSPE_result_B3[,-1]
+boxplot(MSPE_result_B3, main = "Six Procedures for Boston Housing Data 3", 
+        ylab = "MSPE")
+```
+
+The results of Lasso regression performed better, and the principal component regression performed the worst. The reason why Lasso models can performed better is because Lasso models could punished those variables to no effect. Both Ridge and Lasso could selected variables which are related to same directions. Since there are lots of noises in the set, by PCR, those selected PCs might better de-composed for Xs but lose information that related to the response variable.

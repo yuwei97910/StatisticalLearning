@@ -1,6 +1,6 @@
-# STAT 542 Project 1:
+# STAT 542: Project 1
 
-This project aims to predict the house price for the dataset. 
+This project aims to predict the house price for the dataset: the Ames Housing Data. 
 Methods included:
 1. Tree-based model
   - XG-Boosting
